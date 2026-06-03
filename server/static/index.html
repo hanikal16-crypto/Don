@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agentic Architects</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏛️</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>🏛️ Agentic Architects</h1>
+      <p class="tagline">
+        A spec in. A designed &amp; built end-to-end solution out.
+      </p>
+    </header>
+
+    <main class="layout">
+      <section class="panel input-panel">
+        <h2>1 · Your specification</h2>
+        <textarea
+          id="spec"
+          placeholder="Describe the system you want. e.g. &quot;A multi-tenant SaaS for real-time product analytics — SDK ingest, dashboards with sub-2s queries, tenant isolation, usage-based billing...&quot;"
+        ></textarea>
+
+        <div class="controls">
+          <label class="check">
+            <input type="checkbox" id="build" checked />
+            Generate the end-to-end repo (frontend + backend + tests + CI)
+          </label>
+          <label class="effort">
+            Effort
+            <select id="effort">
+              <option value="">default (high)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </label>
+          <button id="run">Run the team →</button>
+        </div>
+        <p id="hint" class="hint"></p>
+      </section>
+
+      <section class="panel team-panel">
+        <h2>2 · The team</h2>
+        <div class="group-label">Architects (design)</div>
+        <ul id="architects" class="agent-list"></ul>
+        <div class="group-label">Engineers (build)</div>
+        <ul id="engineers" class="agent-list"></ul>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="result-head">
+          <h2>3 · Result</h2>
+          <div id="actions" class="actions hidden">
+            <a id="dl-zip" class="btn" download>⬇ Download repo (.zip)</a>
+          </div>
+        </div>
+        <div class="tabs">
+          <button class="tab active" data-tab="log">Activity</button>
+          <button class="tab" data-tab="architecture">Architecture</button>
+          <button class="tab" data-tab="solution">Solution</button>
+          <button class="tab" data-tab="files">Files</button>
+        </div>
+        <div id="tab-log" class="tab-body active">
+          <ul id="log" class="log"></ul>
+        </div>
+        <div id="tab-architecture" class="tab-body markdown"></div>
+        <div id="tab-solution" class="tab-body markdown"></div>
+        <div id="tab-files" class="tab-body"></div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

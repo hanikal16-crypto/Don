@@ -26,6 +26,9 @@ DEFAULT_EFFORT = "high"
 # the SDK's HTTP timeout at this size.
 MAX_TOKENS = 32_000
 
+# Code generation produces larger outputs (whole files) — give it more room.
+ENGINEERING_MAX_TOKENS = 48_000
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -34,6 +37,9 @@ class Settings:
     model: str = os.getenv("ARCHITECT_MODEL", DEFAULT_MODEL)
     effort: str = os.getenv("ARCHITECT_EFFORT", DEFAULT_EFFORT)
     max_tokens: int = MAX_TOKENS
+    engineering_max_tokens: int = int(
+        os.getenv("ARCHITECT_ENGINEERING_MAX_TOKENS", ENGINEERING_MAX_TOKENS)
+    )
 
     def validate(self) -> None:
         if not os.getenv("ANTHROPIC_API_KEY"):

@@ -157,6 +157,82 @@ SOLUTION_ARCHITECT = Architect(
 )
 
 
+# --- Engineering crew (build the e2e solution) ------------------------------
+
+TECH_LEAD = Architect(
+    key="techlead",
+    title="Tech Lead",
+    emoji="🛠️",
+    remit="Chooses the stack and plans the file-by-file build.",
+    system_prompt=(
+        "You are a pragmatic Tech Lead. Given a project brief and the agreed "
+        "architecture, decide on a concrete, conventional technology stack and a "
+        "complete file manifest for a runnable end-to-end repository (frontend, "
+        "backend, tests, and CI).\n\n"
+        "Prefer boring, well-supported choices that an LLM can implement "
+        "correctly and that run with minimal setup. Scope the build to a "
+        "vertical slice that demonstrates the core of the spec end to end — do "
+        "not try to implement every feature. Every file you list must have a "
+        "clear purpose, and the set must hang together into something that "
+        "actually starts and passes its tests."
+    ),
+)
+
+BACKEND_ENGINEER = Architect(
+    key="backend",
+    title="Backend Engineer",
+    emoji="⚙️",
+    remit="Implements the backend API, data layer, and business logic.",
+    system_prompt=(
+        "You are a senior Backend Engineer. Implement the backend for the agreed "
+        "build plan as complete, runnable source files.\n\n"
+        "Write idiomatic, production-shaped code: clear module boundaries, input "
+        "validation, error handling, configuration via environment, and a health "
+        "check. Include a dependency manifest and a short run command in comments "
+        "or a README snippet. The code must be internally consistent — imports "
+        "resolve, names match the frontend's expectations, and the API matches "
+        "the planned contract. Favor a real but minimal implementation over "
+        "stubs; where you must stub, make it obviously runnable (e.g. an "
+        "in-memory store)."
+    ),
+)
+
+FRONTEND_ENGINEER = Architect(
+    key="frontend",
+    title="Frontend Engineer",
+    emoji="🎨",
+    remit="Implements the frontend UI and its API client.",
+    system_prompt=(
+        "You are a senior Frontend Engineer. Implement the frontend for the "
+        "agreed build plan as complete, runnable source files.\n\n"
+        "Build a clean, usable UI that exercises the core user journey from the "
+        "spec against the backend's API contract. Keep the toolchain minimal and "
+        "conventional. Wire up real API calls (matching the backend's routes and "
+        "payloads), handle loading and error states, and include a dependency "
+        "manifest and run command. Prefer a small, coherent component structure "
+        "over an elaborate one."
+    ),
+)
+
+QA_ENGINEER = Architect(
+    key="qa",
+    title="QA Engineer",
+    emoji="🧪",
+    remit="Writes automated tests and the CI pipeline.",
+    system_prompt=(
+        "You are a senior QA / Test Engineer. Given the backend and frontend "
+        "implementations, write automated tests and a CI pipeline as complete, "
+        "runnable files.\n\n"
+        "Cover the critical paths: backend unit/integration tests against the "
+        "real routes, and at least a smoke test for the frontend. Tests must "
+        "import the actual modules the engineers wrote and assert real behavior — "
+        "no placeholder `assert True`. Add a GitHub Actions workflow that "
+        "installs dependencies and runs the test suites for both sides. Keep the "
+        "tests deterministic and network-free."
+    ),
+)
+
+
 DOMAIN_ARCHITECTS: tuple[Architect, ...] = (
     DATA_ARCHITECT,
     SECURITY_ARCHITECT,
@@ -166,5 +242,16 @@ DOMAIN_ARCHITECTS: tuple[Architect, ...] = (
 
 ALL_ARCHITECTS: tuple[Architect, ...] = (SOLUTION_ARCHITECT, *DOMAIN_ARCHITECTS)
 
-# Convenience lookup by key.
+# The engineering crew that turns the design into a runnable repo.
+ENGINEERS: tuple[Architect, ...] = (
+    TECH_LEAD,
+    BACKEND_ENGINEER,
+    FRONTEND_ENGINEER,
+    QA_ENGINEER,
+)
+
+# Convenience lookup by key (architects only — kept for backward compatibility).
 ARCHITECTS: dict[str, Architect] = {a.key: a for a in ALL_ARCHITECTS}
+
+# Every agent in the system, for progress display / lookups.
+AGENTS: dict[str, Architect] = {a.key: a for a in (*ALL_ARCHITECTS, *ENGINEERS)}

@@ -1,9 +1,14 @@
-"""Command-line interface for the Agentic Architects team.
+"""Command-line interface for the Agentic Architects.
 
 Examples:
+    # Design + build a full e2e repo into ./output/<name>/
     python -m architects "Design a multi-tenant SaaS for real-time analytics."
-    python -m architects --brief-file brief.md --out output/review.md
-    echo "Design a URL shortener" | python -m architects
+
+    # Design only (no code generation)
+    python -m architects --no-build --brief-file examples/brief-analytics-saas.md
+
+    # Pick where the generated repo and the architecture doc go
+    python -m architects --brief-file spec.md --out-dir build/myapp --report review.md
 """
 
 from __future__ import annotations
@@ -13,9 +18,11 @@ import asyncio
 import sys
 from pathlib import Path
 
-from architects.agents import ARCHITECTS
+from architects.agents import AGENTS
+from architects.codegen import write_solution
 from architects.config import Settings
-from architects.orchestrator import run_review
+from architects.events import RunEvent
+from architects.orchestrator import run_pipeline
 from architects.report import render_markdown
 
 
@@ -27,41 +34,62 @@ def _read_brief(args: argparse.Namespace) -> str:
     if not sys.stdin.isatty():
         return sys.stdin.read()
     raise SystemExit(
-        "No brief provided. Pass it as an argument, via --brief-file, or on stdin."
+        "No spec provided. Pass it as an argument, via --brief-file, or on stdin."
     )
 
 
-def _make_progress(stream=sys.stderr):
-    async def progress(key: str, phase: str) -> None:
-        agent = ARCHITECTS[key]
-        if phase == "start":
-            print(f"  {agent.emoji}  {agent.title} … working", file=stream, flush=True)
-        else:
-            print(f"  ✅  {agent.title} done", file=stream, flush=True)
+def _make_hook(stream=sys.stderr):
+    async def hook(event: RunEvent) -> None:
+        if event.type == "phase":
+            mark = "✓" if event.phase == "done" else "▶"
+            print(f"\n{mark} {event.message}", file=stream, flush=True)
+        elif event.type == "agent":
+            agent = AGENTS.get(event.agent or "")
+            emoji = agent.emoji if agent else "•"
+            if event.phase == "start":
+                print(f"   {emoji}  {event.message}", file=stream, flush=True)
+            else:
+                extra = ""
+                if event.data.get("files"):
+                    extra = f" ({event.data['files']} files)"
+                elif event.data.get("files_planned"):
+                    extra = f" ({event.data['files_planned']} files planned)"
+                print(f"   ✅  {event.message}{extra}", file=stream, flush=True)
+        elif event.type == "files":
+            print(f"   📦  {event.message}", file=stream, flush=True)
+        elif event.type == "error":
+            print(f"   ⚠️  {event.message}", file=stream, flush=True)
 
-    return progress
+    return hook
 
 
 async def _amain(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="architects",
         description=(
-            "Run a team of five specialized architect agents (Solution, Data, "
-            "Security, Observability, Cloud) over a project brief."
+            "Design (5 architects) and build (engineering crew) an end-to-end "
+            "solution from a specification."
         ),
     )
-    parser.add_argument("brief", nargs="?", help="The project brief text.")
+    parser.add_argument("brief", nargs="?", help="The specification text.")
+    parser.add_argument("--brief-file", help="Path to a file containing the spec.")
     parser.add_argument(
-        "--brief-file", help="Path to a file containing the project brief."
+        "--build",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Generate the end-to-end repo (default: on; use --no-build for "
+        "design only).",
     )
     parser.add_argument(
-        "-o",
-        "--out",
-        help="Write the Markdown report to this path (default: stdout).",
+        "--out-dir",
+        default="output/solution",
+        help="Where to write the generated repo (default: output/solution).",
     )
     parser.add_argument(
-        "--model", help="Override the Claude model (default: claude-opus-4-8)."
+        "--report",
+        help="Also write the architecture document (markdown) to this path.",
     )
+    parser.add_argument("--model", help="Override the Claude model.")
     parser.add_argument(
         "--effort",
         choices=["low", "medium", "high", "xhigh", "max"],
@@ -71,35 +99,48 @@ async def _amain(argv: list[str] | None = None) -> int:
 
     brief = _read_brief(args).strip()
     if not brief:
-        raise SystemExit("The brief is empty.")
+        raise SystemExit("The spec is empty.")
 
+    base = Settings()
     settings = Settings(
-        model=args.model or Settings().model,
-        effort=args.effort or Settings().effort,
+        model=args.model or base.model,
+        effort=args.effort or base.effort,
     )
 
-    print("\n🏛️  Agentic Architects — reviewing your brief\n", file=sys.stderr)
+    print("\n🏛️  Agentic Architects — designing", end="", file=sys.stderr)
+    print(" and building your solution\n" if args.build else " your architecture\n",
+          file=sys.stderr)
+
     try:
-        review = await run_review(
-            brief, settings=settings, progress=_make_progress()
+        result = await run_pipeline(
+            brief, build=args.build, settings=settings, hook=_make_hook()
         )
-    except RuntimeError as exc:  # config/usage errors → friendly message
+    except RuntimeError as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         return 1
 
-    report = render_markdown(review)
+    # Architecture document.
+    report_md = render_markdown(result.review)
+    if args.report:
+        Path(args.report).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.report).write_text(report_md, encoding="utf-8")
+        print(f"\n📄  Architecture written to {args.report}", file=sys.stderr)
+    elif not args.build:
+        print("\n" + report_md)
 
-    if args.out:
-        out_path = Path(args.out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(report, encoding="utf-8")
-        print(f"\n📄  Report written to {out_path}", file=sys.stderr)
-    else:
-        print(report)
-
-    if review.cache_read_tokens:
+    # Generated repo.
+    if result.solution and result.solution.files:
+        out_dir = write_solution(result.solution.files, args.out_dir)
         print(
-            f"\n♻️  Reused {review.cache_read_tokens:,} cached input tokens.",
+            f"\n📦  Generated {len(result.solution.files)} files in {out_dir}/",
+            file=sys.stderr,
+        )
+        if result.solution.build_plan:
+            print("    Run instructions are in SOLUTION.md.", file=sys.stderr)
+
+    if result.cache_read_tokens:
+        print(
+            f"\n♻️  Reused {result.cache_read_tokens:,} cached input tokens.",
             file=sys.stderr,
         )
     return 0
