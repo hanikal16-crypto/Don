@@ -55,6 +55,8 @@ def _make_hook(stream=sys.stderr):
                 elif event.data.get("files_planned"):
                     extra = f" ({event.data['files_planned']} files planned)"
                 print(f"   ✅  {event.message}{extra}", file=stream, flush=True)
+        elif event.type == "tool":
+            print(f"      ↳ {event.message}", file=stream, flush=True)
         elif event.type == "files":
             print(f"   📦  {event.message}", file=stream, flush=True)
         elif event.type == "error":
@@ -113,7 +115,11 @@ async def _amain(argv: list[str] | None = None) -> int:
 
     try:
         result = await run_pipeline(
-            brief, build=args.build, settings=settings, hook=_make_hook()
+            brief,
+            build=args.build,
+            workdir=args.out_dir if args.build else None,
+            settings=settings,
+            hook=_make_hook(),
         )
     except RuntimeError as exc:
         print(f"\nError: {exc}", file=sys.stderr)

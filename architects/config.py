@@ -40,6 +40,10 @@ class Settings:
     engineering_max_tokens: int = int(
         os.getenv("ARCHITECT_ENGINEERING_MAX_TOKENS", ENGINEERING_MAX_TOKENS)
     )
+    # Autonomous-agent loop controls.
+    max_steps: int = int(os.getenv("ARCHITECT_MAX_STEPS", "40"))
+    bash_timeout: int = int(os.getenv("ARCHITECT_BASH_TIMEOUT", "180"))
+    allow_bash: bool = os.getenv("ARCHITECT_DISABLE_BASH") is None
 
     def validate(self) -> None:
         if not os.getenv("ANTHROPIC_API_KEY"):

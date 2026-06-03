@@ -230,6 +230,8 @@ function listen(runId) {
         setAgentState(e.agent, "done", "done");
         log("  ✅ " + e.message + extra, "done");
       }
+    } else if (e.type === "tool") {
+      log("      ↳ " + e.message);
     } else if (e.type === "files") {
       log("  📦 " + e.message);
     } else if (e.type === "error") {

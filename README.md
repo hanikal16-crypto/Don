@@ -3,9 +3,12 @@
 Give a **spec** in. Get a **designed and built end-to-end solution** out.
 
 A multi-agent system where a team of Claude-powered agents **design** a software
-system and then **build** it into a runnable repository — frontend, backend,
-tests, and CI. It ships as a **web app** (frontend + backend) so you can paste a
-spec, watch the agents work live, and download the generated repo.
+system and then **autonomously build** it into a runnable repository — frontend,
+backend, tests, and CI. The engineers don't just emit code: they work in a real
+workspace with tools (`write_file`, `read_file`, `list_dir`, `run_command`),
+**run their code, run the tests, and fix failures themselves** in an agentic
+loop. It ships as a **web app** (frontend + backend) so you can paste a spec,
+watch the agents work live (every tool call streamed), and download the repo.
 
 ## The team
 
@@ -37,10 +40,12 @@ spec, watch the agents work live, and download the generated repo.
           │   └▶ Solution Architect synthesizes the architecture    │
           └────────────────────────────┬──────────────────────────┘
                                         │ (architecture)
-          ┌─ BUILD ────────────────────▼──────────────────────────┐
+          ┌─ BUILD (autonomous agents in a shared workspace) ──────┐
           │ Tech Lead plans the repo (stack + file manifest)       │
-          │   └▶ Backend + Frontend engineers implement (parallel) │
-          │   └▶ QA engineer writes tests + CI from the real code  │
+          │   └▶ Backend engineer: writes files, installs, runs    │
+          │   └▶ Frontend engineer: builds against the real API    │
+          │   └▶ QA engineer: writes tests, RUNS them, fixes until │
+          │      green — each driving its own tool-use loop        │
           └────────────────────────────┬──────────────────────────┘
                                         ▼
                  a runnable repo  +  architecture doc  (download as .zip)
@@ -57,8 +62,10 @@ Both layers of this project have a **frontend and a backend**:
 - Official `anthropic` SDK with **Claude Opus 4.8**, **adaptive thinking**, and
   tunable `effort`.
 - **Streaming** everywhere (architecture write-ups and large code files).
-- **Structured outputs** (`output_config.format` + Pydantic) so the engineers
-  return validated files, not loose text.
+- **Agentic tool-use loop** (the "agent" tier): each engineer runs a manual
+  loop with client-side tools and self-verifies by actually running its code.
+- **Structured outputs** (`output_config.format` + Pydantic) for the Tech Lead's
+  build plan.
 - **Prompt caching**: the shared spec/design/plan is placed in a cached system
   block reused byte-for-byte across the parallel agents, so it is read from
   cache instead of re-billed per agent. Cache reuse is reported in the UI/CLI.
@@ -125,7 +132,10 @@ asyncio.run(main())
 | API key | `ANTHROPIC_API_KEY` | — | Required for real runs. |
 | Model | `ARCHITECT_MODEL` | `claude-opus-4-8` | Any current Claude model. |
 | Effort | `ARCHITECT_EFFORT` | `high` | `low`→`max`; deeper = more tokens. |
-| Code-gen tokens | `ARCHITECT_ENGINEERING_MAX_TOKENS` | `48000` | Output ceiling for file generation. |
+| Code-gen tokens | `ARCHITECT_ENGINEERING_MAX_TOKENS` | `48000` | Output ceiling per agent turn. |
+| Max steps | `ARCHITECT_MAX_STEPS` | `40` | Tool-call budget per engineer (loop cap). |
+| Bash timeout | `ARCHITECT_BASH_TIMEOUT` | `180` | Per-command timeout (seconds). |
+| Disable bash | `ARCHITECT_DISABLE_BASH` | unset | Set to `1` to forbid `run_command`. |
 
 ## Project layout
 
@@ -134,8 +144,10 @@ architects/            the agent pipeline (a library + CLI)
   agents.py            the 9 agent personas (architects + engineers)
   config.py            model/effort/token settings + client
   llm.py               streamed text + structured Claude calls
+  tools.py             workspace + client-side tools (write/read/list/run)
+  agent_loop.py        the autonomous agentic loop (manual tool-use loop)
   codegen.py           file models, path safety, write/zip
-  orchestrator.py      the design + engineering workflow
+  orchestrator.py      the design + autonomous engineering workflow
   report.py            ArchitectureReview/solution -> Markdown
   events.py            progress event model
   cli.py               `python -m architects`
@@ -157,13 +169,26 @@ Covers agent wiring, config validation, report rendering, code-gen models +
 path-traversal guard, and the FastAPI routes/SSE flow (with a faked pipeline —
 no API key or network required).
 
+## Security ⚠️
+
+The engineering agents run **arbitrary shell commands** via `run_command`
+(installing dependencies, running tests, etc.) — that autonomy is the whole
+point, but it means generated/agent-chosen commands execute with the host's
+privileges. **Run the platform in a disposable container** (this is also the
+default posture of the hosted environment). Commands are confined to the run's
+workspace directory and time-limited, and file tools are path-traversal-guarded,
+but that is not a substitute for OS-level isolation. Set
+`ARCHITECT_DISABLE_BASH=1` to let agents read/write files without executing
+anything.
+
 ## Notes & limits
 
-- **9 Claude calls per full run** (6 design + tech lead + 2 engineers + QA), all
-  at the configured effort. Use a lower `--effort` or `--no-build` for cheaper,
-  faster runs.
-- The generated repo is a **coherent, runnable-by-design vertical slice** with
-  CI — not a guaranteed-bug-free implementation of an arbitrary spec. Run its
-  generated tests/CI to validate.
+- A full run is the 6 design calls **plus an autonomous build loop** per
+  engineer (many tool-use turns each, bounded by `ARCHITECT_MAX_STEPS`), so it
+  is the most capable *and* the most token-heavy mode. Use `--no-build` or a
+  lower `--effort` for cheaper, faster runs.
+- The agents self-verify (run the tests and fix failures), but success is not
+  guaranteed for an arbitrary spec — the generated CI lets you confirm
+  downstream.
 - The Security Architect produces **defensive** guidance for systems you are
   authorized to build.

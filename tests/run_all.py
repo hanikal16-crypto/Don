@@ -11,7 +11,12 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-MODULES = ["tests.test_offline", "tests.test_codegen", "tests.test_server"]
+MODULES = [
+    "tests.test_offline",
+    "tests.test_codegen",
+    "tests.test_agentic",
+    "tests.test_server",
+]
 
 
 def main() -> int:

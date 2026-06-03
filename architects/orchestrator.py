@@ -15,11 +15,14 @@ CLI and the web backend (SSE) can render the same live stream.
 from __future__ import annotations
 
 import asyncio
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
 from architects import report
+from architects.agent_loop import run_agent
 from architects.agents import (
     BACKEND_ENGINEER,
     DOMAIN_ARCHITECTS,
@@ -31,15 +34,14 @@ from architects.agents import (
 )
 from architects.codegen import (
     BUILD_PLAN_SCHEMA,
-    FILE_BUNDLE_SCHEMA,
     BuildPlan,
     GeneratedFile,
     parse_build_plan,
-    parse_file_bundle,
 )
 from architects.config import Settings, build_client
 from architects.events import EventHook, RunEvent, noop_hook
 from architects.llm import build_system, run_structured, run_text
+from architects.tools import Workspace
 
 
 # --- Result models ----------------------------------------------------------
@@ -213,24 +215,6 @@ async def _run_design(brief: str, engine: _Engine) -> ArchitectureReview:
     return review
 
 
-def _files_as_text(files: list[GeneratedFile], char_budget: int = 60_000) -> str:
-    """Render generated files as context for the QA engineer, within a budget."""
-    parts: list[str] = []
-    used = 0
-    for f in files:
-        header = f"\n### `{f.path}`\n```\n"
-        body = f.content
-        chunk = header + body + "\n```\n"
-        if used + len(chunk) > char_budget:
-            remaining = max(0, char_budget - used - len(header) - 16)
-            chunk = header + body[:remaining] + "\n… (truncated)\n```\n"
-            parts.append(chunk)
-            break
-        parts.append(chunk)
-        used += len(chunk)
-    return "".join(parts)
-
-
 def _plan_as_text(plan: BuildPlan) -> str:
     stack = "\n".join(f"- {c.component}: {c.choice}" for c in plan.stack)
     manifest = "\n".join(f"- `{f.path}` ({f.area}) — {f.purpose}" for f in plan.files)
@@ -242,7 +226,7 @@ def _plan_as_text(plan: BuildPlan) -> str:
 
 
 async def _run_engineering(
-    brief: str, review: ArchitectureReview, engine: _Engine
+    brief: str, review: ArchitectureReview, engine: _Engine, workdir: str
 ) -> GeneratedSolution:
     solution = GeneratedSolution()
     await engine.emit(
@@ -255,14 +239,15 @@ async def _run_engineering(
         f"# Agreed architecture\n\n{review.final_document}\n"
     )
 
-    # Tech Lead → build plan.
+    # Tech Lead → build plan (structured).
     plan_data = await engine.structured(
         TECH_LEAD,
         design_context,
         "Produce the build plan: choose a concrete, conventional stack for a "
         "runnable end-to-end repository (frontend + backend + tests + CI) and a "
         "complete file manifest. Scope it to a coherent vertical slice that "
-        "demonstrates the core of the spec end to end. Group files by area "
+        "demonstrates the core of the spec end to end, and that the engineers "
+        "can actually build and get passing on a CI runner. Group files by area "
         "(backend, frontend, tests, ci, docs).",
         BUILD_PLAN_SCHEMA,
     )
@@ -270,59 +255,59 @@ async def _run_engineering(
     solution.build_plan = plan
     await engine._agent_done(TECH_LEAD, {"files_planned": len(plan.files)})
 
-    # Shared, cached context for the engineers = design + plan.
+    # Shared, cached context for the autonomous engineers = design + plan.
     eng_context = f"{design_context}\n{_plan_as_text(plan)}"
 
-    async def build(agent: Architect, instruction: str):
-        data = await engine.structured(agent, eng_context, instruction, FILE_BUNDLE_SCHEMA)
-        bundle = parse_file_bundle(data)
-        await engine._agent_done(agent, {"files": len(bundle.files)})
-        return bundle
+    # The engineers work autonomously in one shared workspace, in sequence so
+    # each builds on (and can run) the previous one's code.
+    workspace = Workspace(
+        workdir,
+        allow_bash=engine.settings.allow_bash,
+        bash_timeout=engine.settings.bash_timeout,
+    )
 
-    backend_bundle, frontend_bundle = await asyncio.gather(
-        build(
+    crew: list[tuple[Architect, str]] = [
+        (
             BACKEND_ENGINEER,
-            "Implement every backend and shared-config file from the manifest as "
-            "complete, runnable source. Include the dependency manifest. Make the "
-            "API contract explicit so the frontend can match it.",
+            "Implement the backend per the build plan, here in this workspace. "
+            "Create the files with write_file, install dependencies, and run the "
+            "app (or a quick smoke check) with run_command to confirm it starts. "
+            "Make the API routes and payloads explicit so the frontend can match "
+            "them.",
         ),
-        build(
+        (
             FRONTEND_ENGINEER,
-            "Implement every frontend file from the manifest as complete, "
-            "runnable source. Call the backend's API exactly as planned, and "
-            "handle loading and error states.",
+            "Implement the frontend per the build plan in this workspace. Inspect "
+            "the backend the previous engineer built (list_dir/read_file) and call "
+            "its real API. Install dependencies and run the build/lint with "
+            "run_command to confirm it works.",
         ),
-    )
-
-    code_files = [*backend_bundle.files, *frontend_bundle.files]
-
-    # QA → tests + CI, given the actual code.
-    qa_context = (
-        f"{eng_context}\n# Implemented source files\n"
-        f"{_files_as_text(code_files)}\n"
-    )
-    qa_data = await engine.structured(
-        QA_ENGINEER,
-        qa_context,
-        "Write the test and CI files from the manifest as complete, runnable "
-        "source. Import the actual modules shown above and assert real behavior. "
-        "Add a GitHub Actions workflow that installs dependencies and runs both "
-        "test suites.",
-        FILE_BUNDLE_SCHEMA,
-    )
-    qa_bundle = parse_file_bundle(qa_data)
-    await engine._agent_done(QA_ENGINEER, {"files": len(qa_bundle.files)})
-
-    # Assemble — first writer per path wins; then inject generated docs.
-    merged: dict[str, GeneratedFile] = {}
-    for f in [*code_files, *qa_bundle.files]:
-        merged.setdefault(f.path, f)
-
-    solution.notes = [
-        n
-        for n in (backend_bundle.notes, frontend_bundle.notes, qa_bundle.notes)
-        if n.strip()
+        (
+            QA_ENGINEER,
+            "Write the automated tests and the CI workflow per the build plan. "
+            "Then actually RUN the test suites with run_command and FIX any "
+            "failures by editing the code (backend or frontend) until everything "
+            "passes — or you have made a strong, documented effort. End with the "
+            "final test status.",
+        ),
     ]
+
+    for agent, task in crew:
+        summary, cache = await run_agent(
+            engine.client,
+            engine.settings,
+            agent,
+            eng_context,
+            task,
+            workspace,
+            hook=engine.hook,
+        )
+        engine.cache_read_tokens += cache
+        if summary:
+            solution.notes.append(f"{agent.title}: {summary}")
+
+    # Read the repo back out of the workspace.
+    merged: dict[str, GeneratedFile] = {f.path: f for f in workspace.snapshot()}
 
     # Inject the architecture doc and a solution overview (don't clobber).
     docs = {
@@ -339,7 +324,7 @@ async def _run_engineering(
     await engine.emit(
         RunEvent(
             "files",
-            f"Generated {len(solution.files)} files.",
+            f"Built {len(solution.files)} files.",
             data={"count": len(solution.files), "paths": list(merged)},
         )
     )
@@ -357,20 +342,32 @@ async def run_pipeline(
     brief: str,
     *,
     build: bool = True,
+    workdir: str | None = None,
     settings: Settings | None = None,
     client: AsyncAnthropic | None = None,
     hook: EventHook | None = None,
 ) -> RunResult:
-    """Run the design phase and (optionally) the engineering phase."""
+    """Run the design phase and (optionally) the autonomous engineering phase.
+
+    For the build phase the engineers need a workspace directory. Pass
+    ``workdir`` to keep the generated repo on disk; if omitted, a temp dir is
+    used and removed after the files are snapshotted into the result.
+    """
     settings = settings or Settings()
     settings.validate()
     owns_client = client is None
     client = client or build_client()
     engine = _Engine(client, settings, hook or noop_hook)
 
+    created_temp = False
     try:
         review = await _run_design(brief, engine)
-        solution = await _run_engineering(brief, review, engine) if build else None
+        solution = None
+        if build:
+            if workdir is None:
+                workdir = tempfile.mkdtemp(prefix="architects-")
+                created_temp = True
+            solution = await _run_engineering(brief, review, engine, workdir)
         result = RunResult(
             brief=brief.strip(),
             review=review,
@@ -385,6 +382,8 @@ async def run_pipeline(
     finally:
         if owns_client:
             await client.close()
+        if created_temp and workdir:
+            shutil.rmtree(workdir, ignore_errors=True)
 
 
 async def run_review(
